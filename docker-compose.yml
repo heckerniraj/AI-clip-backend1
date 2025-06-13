@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  clipsmartai-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: clipsmartai-backend
+    restart: always
+    ports:
+      - "4001:4001"
+    volumes:
+      - ./temp:/usr/src/app/temp
+      - ./.env:/usr/src/app/.env
+    environment:
+      - NODE_ENV=production
+    networks:
+      - clipsmartai-network
+
+  # Optional: Uncomment if you want to run a local MongoDB
+  # mongodb:
+  #   image: mongo:latest
+  #   container_name: mongodb
+  #   restart: always
+  #   environment:
+  #     - MONGO_INITDB_ROOT_USERNAME=admin
+  #     - MONGO_INITDB_ROOT_PASSWORD=password
+  #   ports:
+  #     - "27017:27017"
+  #   volumes:
+  #     - mongodb-data:/data/db
+  #   networks:
+  #     - clipsmartai-network
+
+networks:
+  clipsmartai-network:
+    driver: bridge
+
+# Only needed if using local MongoDB
+# volumes:
+#   mongodb-data: 
