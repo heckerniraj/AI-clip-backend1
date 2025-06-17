@@ -54,16 +54,17 @@ const generateTranscript = async (videoUrl) => {
 
     return {
       text: transcript.text,
-      duration: transcript.audio_duration, // Already in seconds
+      duration: transcript.audio_duration,
       segments: transcript.utterances?.map(u => ({
-        start: u.start / 1000, // Convert milliseconds to seconds
-        end: u.end / 1000,     // Convert milliseconds to seconds
+        start: u.start,
+        end: u.end,
         text: u.text,
         speaker: u.speaker
       })) || [],
       words: transcript.words,
       confidence: transcript.confidence
     };
+
   } catch (error) {
     console.error('Transcription failed:', error);
     throw new Error(`Transcription error: ${error.message}`);
