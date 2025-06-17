@@ -26,7 +26,7 @@ const generateTranscript = async (videoUrl) => {
     }
 
     console.log('Submitting for transcription...');
-    let transcript = await client.transcripts.create({
+     const transcript = await client.transcripts.create({
       audio_url: audioUrl,
       speaker_labels: true,
       auto_highlights: true,
@@ -54,17 +54,16 @@ const generateTranscript = async (videoUrl) => {
 
     return {
       text: transcript.text,
-      duration: transcript.audio_duration,
+      duration: transcript.audio_duration, // Already in seconds
       segments: transcript.utterances?.map(u => ({
-        start: u.start,
-        end: u.end,
+        start: u.start / 1000, // Convert milliseconds to seconds
+        end: u.end / 1000,     // Convert milliseconds to seconds
         text: u.text,
         speaker: u.speaker
       })) || [],
       words: transcript.words,
       confidence: transcript.confidence
     };
-
   } catch (error) {
     console.error('Transcription failed:', error);
     throw new Error(`Transcription error: ${error.message}`);

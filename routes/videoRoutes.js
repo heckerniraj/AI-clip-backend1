@@ -71,23 +71,23 @@ router.get('/:videoId/transcript', async (req, res) => {
           ? new Date(video.processingCompletedAt) - new Date(video.createdAt)
           : null,
         transcript: {
-          text: video.transcript.text || '',
-          segments: (video.transcript.segments || []).map(segment => ({
-            id: segment.id || null,
-            text: segment.text || '',
-            start: segment.start || segment.startTime || 0,
-            end: segment.end || segment.endTime || 0,
-            duration: (segment.end || segment.endTime || 0) - (segment.start || segment.startTime || 0),
-            confidence: segment.confidence || null,
-            words: segment.words || []
-          })),
-          language: video.transcript.language || 'en',
-          processingStatus: 'completed'
-        }
+        text: video.transcript.text || '',
+        segments: (video.transcript.segments || []).map(segment => ({
+          id: segment.id || null,
+          text: segment.text || '',
+          start: (segment.start || segment.startTime || 0) / 1000, // Ensure seconds
+          end: (segment.end || segment.endTime || 0) / 1000,       // Ensure seconds
+          duration: ((segment.end || segment.endTime || 0) - (segment.start || segment.startTime || 0)) / 1000,
+          confidence: segment.confidence || null,
+          words: segment.words || []
+        })),
+        language: video.transcript.language || 'en',
+        processingStatus: 'completed'
       }
-    };
-
-    res.json(response);
+    }
+  };
+  
+  res.json(response);
   } catch (error) {
     console.error('Transcript fetch error:', error);
     res.status(500).json({
