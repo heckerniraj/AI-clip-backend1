@@ -53,13 +53,8 @@ const processVideo = async ({ videoId, filePath, userId, isBackgroundProcess = f
     // Generate thumbnail
     const thumbnailFilename = `${videoId}.jpg`;
     const thumbnailPath = path.join(thumbnailsDir, thumbnailFilename);
-    try {
-      await generateThumbnail(finalFilePath, thumbnailPath);
-      video.thumbnailUrl = `/thumbnails/${thumbnailFilename}`;
-    } catch (thumbnailError) {
-      console.error('Using default thumbnail due to:', thumbnailError);
-      video.thumbnailUrl = '/default-thumbnail.jpg';
-    }
+    await generateThumbnail(finalFilePath, thumbnailPath);
+    video.thumbnailUrl = `${process.env.API_BASE_URL || 'https://ai-clip-backend1-1.onrender.com'}/thumbnails/${thumbnailFilename}`;
 
     // Generate transcript
     console.log(`Generating transcript for video: ${videoId}`);
