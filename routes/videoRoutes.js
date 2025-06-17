@@ -86,7 +86,7 @@ router.get('/:videoId/transcript', async (req, res) => {
       }
     }
   };
-  
+
   res.json(response);
   } catch (error) {
     console.error('Transcript fetch error:', error);
@@ -128,15 +128,13 @@ router.get('/:videoId/details', async (req, res) => {
 
     // Calculate duration from transcript if not set
     let duration = video.duration || 0;
-    if (!duration && video.transcript?.segments?.length > 0) {
-      const lastSegment = video.transcript.segments[video.transcript.segments.length - 1];
-      duration = lastSegment.end || lastSegment.endTime || 0;
-    }
-
-    // Convert to ISO format
-    const minutes = Math.floor(duration / 60);
-    const seconds = Math.floor(duration % 60);
-    const durationISO = `PT${minutes}M${seconds}S`;
+  if (!duration && video.transcript?.segments?.length > 0) {
+    const lastSegment = video.transcript.segments[video.transcript.segments.length - 1];
+    duration = (lastSegment.end || lastSegment.endTime || 0) / 1000; // Convert to seconds
+  }
+  const minutes = Math.floor(duration / 60);
+  const seconds = Math.floor(duration % 60);
+  const durationISO = `PT${minutes}M${seconds}S`;
 
     const response = {
       success: true,
