@@ -3,6 +3,8 @@ const { OAuth2Client } = require("google-auth-library");
 const { axiosWithProxy } = require("../utils/axiosWithProxy");
 const User = require("../model/usersSchema");
 const jwt = require("jsonwebtoken");
+const dotenv = require('dotenv');
+dotenv.config();
 
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
@@ -283,36 +285,57 @@ const signinUserWithTwitter = async (req, res) => {
       });
     }
     
-    // Exchange request token for access token
-    const tokenResponse = await axiosWithProxy.post('https://api.twitter.com/oauth/access_token', null, {
-      params: {
-        oauth_token,
-        oauth_verifier
+    // Exchange request token for access token with proper OAuth 1.0a headers
+    const tokenResponse = await axiosWithProxy.post(
+      'https://api.twitter.com/oauth/access_token',
+      null,
+      {
+        params: {
+          oauth_token,
+          oauth_verifier,
+          oauth_consumer_key: process.env.TWITTER_CONSUMER_KEY
+        },
+        headers: {
+          Authorization: `OAuth oauth_consumer_key="${process.env.TWITTER_CONSUMER_KEY}"`
+        }
       }
+    );
+
+    // Parse the response (it comes as a query string)
+    const responseData = tokenResponse.data;
+    const parsedData = {};
+    responseData.split('&').forEach(pair => {
+      const [key, value] = pair.split('=');
+      parsedData[key] = decodeURIComponent(value);
     });
+
+    const { oauth_token: accessToken, oauth_token_secret: accessTokenSecret, user_id: id, screen_name: username } = parsedData;
     
-    const { oauth_access_token, oauth_access_token_secret } = tokenResponse.data;
-    if (!oauth_access_token) {
+    if (!accessToken || !id) {
       return res.status(401).json({
         status: false,
         message: "Failed to obtain Twitter access token"
       });
     }
 
-    // Get user info from Twitter
-    const userResponse = await axiosWithProxy.get('https://api.twitter.com/2/users/me', {
-      headers: {
-        Authorization: `Bearer ${oauth_access_token}`
-      },
-      params: {
-        'user.fields': 'id,name,username,profile_image_url,email'
+    // Get user info from Twitter API v1.1 (more reliable for OAuth 1.0a)
+    const userResponse = await axiosWithProxy.get(
+      'https://api.twitter.com/1.1/users/show.json',
+      {
+        params: {
+          user_id: id
+        },
+        headers: {
+          Authorization: `OAuth oauth_consumer_key="${process.env.TWITTER_CONSUMER_KEY}", oauth_token="${accessToken}"`
+        }
       }
-    });
+    );
 
-    const { id, name, username, profile_image_url } = userResponse.data;
+    const { name, profile_image_url_https } = userResponse.data;
     
-    // Twitter doesn't reliably provide email, so use username@twitter.com
-    const email = `${username}@twitter.com`;
+    // Generate a more unique email since Twitter doesn't provide one
+    const email = `twitter-${id}@${process.env.EMAIL_DOMAIN || 'https://clip-frontend-three.vercel.app/'}`;
+    const profilePicture = profile_image_url_https?.replace('_normal', ''); // Get higher res image
 
     // Find or create user
     let user = await User.findOne({ $or: [{ email }, { twitterId: id }] });
@@ -323,8 +346,8 @@ const signinUserWithTwitter = async (req, res) => {
         user.isTwitterUser = true;
         user.twitterId = id;
         user.authProvider = 'twitter';
-        if (!user.profilePicture && profile_image_url) {
-          user.profilePicture = profile_image_url;
+        if (!user.profilePicture && profilePicture) {
+          user.profilePicture = profilePicture;
         }
         await user.save();
       }
@@ -333,19 +356,27 @@ const signinUserWithTwitter = async (req, res) => {
       user = new User({
         email,
         name: name || username,
-        profilePicture: profile_image_url,
+        profilePicture: profilePicture,
         isTwitterUser: true,
         twitterId: id,
-        authProvider: 'twitter'
+        authProvider: 'twitter',
+        emailVerified: false // Mark Twitter emails as unverified
       });
       await user.save();
     }
 
-    // Generate JWT token
+    // Generate JWT token with stronger algorithm
     const token = jwt.sign(
-      { userId: user._id, email: user.email },
-      process.env.JWT_SECRET || "your_jwt_secret_key",
-      { expiresIn: "24h" }
+      { 
+        userId: user._id, 
+        email: user.email,
+        authProvider: user.authProvider
+      },
+      process.env.JWT_SECRET,
+      { 
+        expiresIn: "24h",
+        algorithm: 'HS256'
+      }
     );
     
     // Return user data
@@ -358,15 +389,21 @@ const signinUserWithTwitter = async (req, res) => {
         email: user.email,
         isAdmin: user.isAdmin,
         profilePicture: user.profilePicture,
-        authProvider: user.authProvider
+        authProvider: user.authProvider,
+        emailVerified: user.emailVerified
       },
       token 
     });
   } catch (error) {
     console.error("Twitter auth error:", error);
+    const errorMessage = error.response?.data?.errors?.[0]?.message || 
+                        error.response?.data?.message || 
+                        "Authentication with Twitter failed";
+    
     res.status(500).json({
       status: false,
-      message: "Authentication with Twitter failed"
+      message: errorMessage,
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
