@@ -28,50 +28,47 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 // Serve static files from uploads directory
+// Serve static files from uploads directory
 const staticConfig = {
   dotfiles: 'ignore',
   etag: true,
   extensions: ['jpg', 'jpeg', 'png', 'mp4'],
-  maxAge: '1d'
+  maxAge: '1d',
+  setHeaders: (res, path) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
 };
 
 app.use('/uploads', express.static(path.join(__dirname, 'uploads'), staticConfig));
 
 // Add this before your routes
-app.use(express.json({ limit: '500mb' }));
-app.use(express.urlencoded({ extended: true, limit: '500mb' }));
+// app.use(express.json({ limit: '500mb' }));
+// app.use(express.urlencoded({ extended: true, limit: '500mb' }));
 
 // Configure CORS based on environment
-const corsConfig = () => {
-    // Check if we should allow all origins (useful for production)
-    const allowAllOrigins = process.env.ALLOW_ALL_ORIGINS === 'true' || process.env.NODE_ENV === 'production';
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    const allowedOrigins = process.env.ALLOWED_ORIGINS 
+      ? process.env.ALLOWED_ORIGINS.split(',') 
+      : [
+          'https://clip-frontend-niraj1412s-projects.vercel.app',
+          'https://clip-frontend-three.vercel.app',
+          'http://localhost:3000', 
+          'http://127.0.0.1:3000'
+        ];
 
-    if (allowAllOrigins) {
-        console.log('CORS: Allowing requests from all origins (production mode)');
-        return {
-            origin: true,
-            methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'HEAD'],
-            allowedHeaders: ['Content-Type', 'Authorization'],
-            credentials: true
-        };
+    // Remove any trailing slashes from origins
+    const normalizedOrigins = allowedOrigins.map(o => o.replace(/\/$/, ''));
+    
+    if (normalizedOrigins.includes(origin) || process.env.NODE_ENV !== 'production') {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
     }
-
-    // For development, use specific allowed origins
-    const allowedOrigins = process.env.ALLOWED_ORIGINS ?
-        process.env.ALLOWED_ORIGINS.split(',') :
-        ['https://clip-frontend-niraj1412s-projects.vercel.app/','https://clip-frontend-three.vercel.app','http://localhost:3000', 'http://127.0.0.1:3000'];
-
-    console.log('CORS: Allowing requests from specific origins:', allowedOrigins);
-    return {
-        origin: true,
-        methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'HEAD'],
-        allowedHeaders: ['Content-Type', 'Authorization'],
-        credentials: true
-    };
-};
-
-app.use(cors({
-  origin: corsConfig().origin,
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'],
   allowedHeaders: [
     'Content-Type',
@@ -87,7 +84,9 @@ app.use(cors({
     'X-Request-ID'
   ],
   maxAge: 86400 // 24 hours
-}));
+};
+
+app.use(cors(corsOptions));
 
 app.use(express.json({
     limit: payloadLimit,
@@ -111,6 +110,8 @@ const tempDir = path.join(__dirname, 'temp');
 if (!fs.existsSync(tempDir)) {
     fs.mkdirSync(tempDir, { recursive: true });
 }
+
+app.options('*', cors(corsOptions));
 
 // Serve static files from the temp directory
 app.use('/temp', express.static(path.join(__dirname, 'temp'), staticConfig));
