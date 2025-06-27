@@ -10,23 +10,21 @@ const openai = new OpenAI({
 
 const generateClips = async (req, res) => {
   try {
-    // ────────────────────────────
-    // 1.  Gather request payload
-    // ────────────────────────────
     let details = req.body.gotDetails;
     const customization = req.body.customization;
     const customPrompt = req.body.customPrompt || '';
     details = Object.entries(details).map(([k, v]) => ({ [k]: v }));
 
-    // Detect explicit duration in user prompt (e.g. “11 seconds”)
     let explicitDuration = null;
     const m = /(?:^|\s)(\d+(?:\.\d+)?)\s*second(?:s)?/i.exec(customPrompt);
     if (m) explicitDuration = parseFloat(m[1]);
+    console.log('Received customPrompt:', customPrompt);
+    console.log('Extracted explicitDuration:', explicitDuration);
 
-    // ────────────────────────────
-    // 2. Build USER prompt
-    // ────────────────────────────
-const basePrompt = `
+    // Assume video duration from last transcript or default to 600s
+    const videoDuration = details[details.length - 1]?.end || 600;
+
+    const basePrompt = `
 USER REQUEST: ${customPrompt}
 
 TASK: Create engaging clip(s) that satisfy the user's request.
@@ -38,18 +36,14 @@ REQUIREMENTS:
 4. Timing rules:
    - ${
      explicitDuration
-       ? `The clip MUST be EXACTLY ${explicitDuration.toFixed(
-           2
-         )} seconds (±0.05 seconds).`
-       : 'Minimum 3 seconds, maximum 60 seconds.'
+       ? `The clip MUST be exactly ${explicitDuration.toFixed(2)} s (±0.05).`
+       : 'Minimum 3 s, maximum 60 s.'
    }
-   - Add ~2 seconds buffer before and after, if possible, while maintaining the exact duration.
-   - All timestamps precise to 2 decimal places.
-${
-  explicitDuration && /end/i.test(customPrompt)
-    ? `- The clip MUST be taken from the FINAL 20% of the video duration (e.g., if the video is 100 seconds long, the clip must start after 80 seconds).`
-    : ''
-}
+   - Add ~2 s buffer before & after, if possible.
+   - All timestamps precise to 2 decimals.
+${explicitDuration && /end/i.test(customPrompt)
+  ? '- Take the clip from the FINAL part of the video.'
+  : ''}
 
 OUTPUT FORMAT (plain JSON, no markdown):
 [
@@ -65,15 +59,9 @@ Source transcripts:
 ${JSON.stringify(details, null, 2)}`.trim();
 
     const enhancedPrompt = customization
-      ? `${basePrompt}
-
-Apply these style preferences:
-- Tone: ${customization.tone}
-- Length: ${customization.length}
-- Style: ${customization.style}`
+      ? `${basePrompt}\n\nApply these style preferences:\n- Tone: ${customization.tone}\n- Length: ${customization.length}\n- Style: ${customization.style}`
       : basePrompt;
 
-    // Helper for retry logic
     const callOpenAI = async (temperature) => {
       const resp = await openai.chat.completions.create({
         model: 'gpt-4-turbo-preview',
@@ -92,90 +80,61 @@ Apply these style preferences:
       return resp.choices[0].message.content.trim();
     };
 
-    // ────────────────────────────
-    // 3.  First attempt (T=0.2)
-    // ────────────────────────────
-    let script = await callOpenAI(0.2);
-
-    // Validation / potential retry
-    const validate = (clips, videoDuration) => {
-  if (!Array.isArray(clips) || clips.length === 0) {
-    throw new Error('Empty or invalid JSON returned by the model.');
-  }
-
-  if (explicitDuration) {
-    const bad = clips.find(
-      (c) =>
-        Math.abs(
-          (parseFloat(c.endTime) - parseFloat(c.startTime)) - explicitDuration
-        ) > 0.05
-    );
-    if (bad) {
-      throw new Error(
-        `Clip duration mismatch (id: ${bad.videoId}). Expected ≈${explicitDuration}s, got ${
-          parseFloat(bad.endTime) - parseFloat(bad.startTime)
-        }s`
-      );
-    }
-  }
-
-  // Check if the clip is from the "end part" of the video (e.g., last 20% of duration)
-  if (explicitDuration && /end/i.test(customPrompt)) {
-    const last20Percent = videoDuration * 0.8; // Define "end part" as last 20%
-    const bad = clips.find((c) => parseFloat(c.startTime) < last20Percent);
-    if (bad) {
-      throw new Error(
-        `Clip not from end part (id: ${bad.videoId}). Expected start time >= ${last20Percent.toFixed(
-          2
-        )}s, got ${parseFloat(bad.startTime).toFixed(2)}s`
-      );
-    }
-  }
-};
+    const validate = (clips) => {
+      if (!Array.isArray(clips) || clips.length === 0)
+        throw new Error('Empty or invalid JSON returned by the model.');
+      if (explicitDuration) {
+        const bad = clips.find(
+          (c) =>
+            Math.abs(
+              (parseFloat(c.endTime) - parseFloat(c.startTime)) - explicitDuration
+            ) > 0.05
+        );
+        if (bad)
+          throw new Error(
+            `Clip duration mismatch (id: ${bad.videoId}). Expected ≈${explicitDuration}s, got ${(parseFloat(bad.endTime) - parseFloat(bad.startTime)).toFixed(2)}s`
+          );
+      }
+    };
 
     const tryParse = (content) => {
       try {
         return JSON.parse(content);
       } catch {
-        // Strip accidental markdown fences if present
         const cleaned = content.replace(/^```(?:json)?|```$/g, '').trim();
         return JSON.parse(cleaned);
       }
     };
 
+    let script = await callOpenAI(0.2);
     let clips;
-let attempts = 0;
-const maxAttempts = 3;
-
-while (attempts < maxAttempts) {
-  try {
-    clips = tryParse(script);
-    validate(clips, videoDuration); // Pass videoDuration
-    break; // Exit loop if validation passes
-  } catch (err) {
-    console.warn(`Attempt ${attempts + 1} failed – ${err.message}`);
-    attempts++;
-    if (attempts < maxAttempts) {
-      script = await callOpenAI(0); // Retry with temperature 0.0
-    } else {
-      // Fallback: Select the last 11 seconds of the video
-      console.warn('Max attempts reached. Falling back to last 11 seconds.');
-      const lastStartTime = videoDuration - 11;
-      clips = [
-        {
-          videoId: details[0]?.videoId || 'unknown',
-          transcriptText: 'Fallback clip from end of video',
-          startTime: lastStartTime.toFixed(2),
-          endTime: videoDuration.toFixed(2),
-        },
-      ];
+    try {
+      clips = tryParse(script);
+      validate(clips);
+    } catch (err) {
+      console.warn('First attempt failed – retrying once:', err.message);
+      script = await callOpenAI(0);
+      try {
+        clips = tryParse(script);
+        validate(clips);
+      } catch (retryErr) {
+        console.warn('Retry failed:', retryErr.message);
+        // Fallback: Generate a clip from the end if "end" is requested
+        if (explicitDuration && /end/i.test(customPrompt)) {
+          const fallbackStart = Math.max(0, videoDuration - explicitDuration);
+          clips = [{
+            videoId: details[0].videoId,
+            transcriptText: 'Fallback clip from end',
+            startTime: fallbackStart.toFixed(2),
+            endTime: videoDuration.toFixed(2)
+          }];
+          console.log('Generated fallback clip:', clips);
+        } else {
+          throw retryErr; // If no fallback applies, throw the error
+        }
+      }
     }
-  }
-}
 
-    // ────────────────────────────
-    // 5.  Success response
-    // ────────────────────────────
     return res.status(200).json({
       success: true,
       data: { script: JSON.stringify(clips) },
