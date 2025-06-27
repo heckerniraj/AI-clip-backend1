@@ -22,7 +22,8 @@ const generateClips = async (req, res) => {
     console.log('Extracted explicitDuration:', explicitDuration);
 
     // Assume video duration from last transcript or default to 600s
-    const videoDuration = details[details.length - 1]?.end || 600;
+    const videoDuration = req.body.videoDuration || details[details.length - 1]?.end || 600;
+    console.log('videoDuration:', videoDuration);
 
     const basePrompt = `
 USER REQUEST: ${customPrompt}
@@ -84,17 +85,24 @@ ${JSON.stringify(details, null, 2)}`.trim();
       if (!Array.isArray(clips) || clips.length === 0)
         throw new Error('Empty or invalid JSON returned by the model.');
       if (explicitDuration) {
-        const bad = clips.find(
+        const badDuration = clips.find(
           (c) =>
             Math.abs(
               (parseFloat(c.endTime) - parseFloat(c.startTime)) - explicitDuration
             ) > 0.05
         );
-        if (bad)
+        if (badDuration)
           throw new Error(
-            `Clip duration mismatch (id: ${bad.videoId}). Expected ≈${explicitDuration}s, got ${(parseFloat(bad.endTime) - parseFloat(bad.startTime)).toFixed(2)}s`
+            `Clip duration mismatch (id: ${badDuration.videoId}). Expected ≈${explicitDuration}s, got ${(parseFloat(badDuration.endTime) - parseFloat(badDuration.startTime)).toFixed(2)}s`
           );
       }
+      const outOfBounds = clips.find(
+        (c) => c.startTime < 0 || c.endTime > videoDuration
+      );
+      if (outOfBounds)
+        throw new Error(
+          `Clip timestamps out of bounds (id: ${outOfBounds.videoId}). Video duration is ${videoDuration}s`
+        );
     };
 
     const tryParse = (content) => {
