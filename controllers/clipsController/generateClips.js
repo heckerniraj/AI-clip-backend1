@@ -21,6 +21,13 @@ const generateClips = async (req, res) => {
 
         Details = Object.entries(Details).map(([key, value]) => ({ [key]: value }));
 
+        // Detect explicit duration request in the custom prompt (e.g., "11 second", "11 seconds")
+        let explicitDuration = null;
+        const durationMatch = /(?:^|\s)(\d+(?:\.\d+)?)\s*second(?:s)?/i.exec(customPrompt || '');
+        if (durationMatch) {
+            explicitDuration = parseFloat(durationMatch[1]);
+        }
+
         const basePrompt = `
 USER REQUEST: ${customPrompt}
 
@@ -35,11 +42,11 @@ REQUIREMENTS:
    - Remove filler words and repetitive content
 
 2. Timing Rules:
+   - ${explicitDuration ? `The clip MUST have a duration of exactly ${explicitDuration.toFixed(2)} seconds (±0.05).` : 'Minimum clip duration: 3 seconds\n   - Maximum clip duration: 60 seconds'}
    - Add 2-second buffer before and after each clip (if possible)
-   - Minimum clip duration: 3 seconds
-   - Maximum clip duration: 60 seconds
    - Ensure 0.5-second gap between clips
    - All timestamps must be precise to 2 decimal places
+   ${explicitDuration && /end/i.test(customPrompt) ? '- Clip should be taken from the FINAL part of the video (use the last available timestamps).' : ''}
 
 OUTPUT FORMAT:
 Return a JSON array with this structure:
@@ -58,7 +65,7 @@ ${JSON.stringify(Details, null, 2)}
 Remember to:
 1. Only use exact quotes from the transcripts
 2. Ensure clips are cohesive and maintain context
-3. Focus on the most relevant content for: "${customPrompt}"`;
+3. Focus on the most relevant content for: "${customPrompt}"${explicitDuration ? `\n4. Clip duration must be exactly ${explicitDuration.toFixed(2)} seconds (±0.05).` : ''}`;
 
 const enhancedPrompt = customization ? 
     `${basePrompt}
