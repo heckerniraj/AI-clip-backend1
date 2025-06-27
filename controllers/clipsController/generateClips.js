@@ -1,115 +1,160 @@
-const OpenAI = require("openai");
+/* controllers/generateClips.js */
+const OpenAI = require('openai');
 const dotenv = require('dotenv');
 dotenv.config();
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-
 const openai = new OpenAI({
-    apiKey: OPENAI_API_KEY,
-    dangerouslyAllowBrowser: true
+  apiKey: process.env.OPENAI_API_KEY,
+  dangerouslyAllowBrowser: true
 });
 
-
 const generateClips = async (req, res) => {
-    try {
-        let Details = req.body.gotDetails;
-        const customization = req.body.customization;
-        const customPrompt = req.body.customPrompt;
-        
+  try {
+    // ────────────────────────────
+    // 1.  Gather request payload
+    // ────────────────────────────
+    let details = req.body.gotDetails;
+    const customization = req.body.customization;
+    const customPrompt = req.body.customPrompt || '';
+    details = Object.entries(details).map(([k, v]) => ({ [k]: v }));
 
-        console.log("Details-PC> ", Details);
+    // Detect explicit duration in user prompt (e.g. “11 seconds”)
+    let explicitDuration = null;
+    const m = /(?:^|\s)(\d+(?:\.\d+)?)\s*second(?:s)?/i.exec(customPrompt);
+    if (m) explicitDuration = parseFloat(m[1]);
 
-        Details = Object.entries(Details).map(([key, value]) => ({ [key]: value }));
-
-        // Detect explicit duration request in the custom prompt (e.g., "11 second", "11 seconds")
-        let explicitDuration = null;
-        const durationMatch = /(?:^|\s)(\d+(?:\.\d+)?)\s*second(?:s)?/i.exec(customPrompt || '');
-        if (durationMatch) {
-            explicitDuration = parseFloat(durationMatch[1]);
-        }
-
-        const basePrompt = `
+    // ────────────────────────────
+    // 2. Build USER prompt
+    // ────────────────────────────
+    const basePrompt = `
 USER REQUEST: ${customPrompt}
 
-TASK: Create engaging video clips by selecting the most relevant segments from the provided transcripts. Focus on segments that directly address the user's request while maintaining coherent narrative flow.
+TASK: Create engaging clip(s) that satisfy the user's request.
 
 REQUIREMENTS:
-1. Content Selection:
-   - Choose segments that directly match the user's request: "${customPrompt}"
-   - Ensure complete thoughts/sentences (no mid-sentence cuts)
-   - Maintain logical flow between segments
-   - Focus on high-impact, relevant content
-   - Remove filler words and repetitive content
+1. Choose segments that directly match the request.
+2. Keep full sentences and logical flow.
+3. Remove filler words.
+4. Timing rules:
+   - ${
+     explicitDuration
+       ? `The clip MUST be exactly ${explicitDuration.toFixed(
+           2
+         )} s (±0.05).`
+       : 'Minimum 3 s, maximum 60 s.'
+   }
+   - Add ~2 s buffer before & after, if possible.
+   - All timestamps precise to 2 decimals.
+${explicitDuration && /end/i.test(customPrompt)
+  ? '- Take the clip from the FINAL part of the video.'
+  : ''}
 
-2. Timing Rules:
-   - ${explicitDuration ? `The clip MUST have a duration of exactly ${explicitDuration.toFixed(2)} seconds (±0.05).` : 'Minimum clip duration: 3 seconds\n   - Maximum clip duration: 60 seconds'}
-   - Add 2-second buffer before and after each clip (if possible)
-   - Ensure 0.5-second gap between clips
-   - All timestamps must be precise to 2 decimal places
-   ${explicitDuration && /end/i.test(customPrompt) ? '- Clip should be taken from the FINAL part of the video (use the last available timestamps).' : ''}
-
-OUTPUT FORMAT:
-Return a JSON array with this structure:
+OUTPUT FORMAT (plain JSON, no markdown):
 [
   {
     "videoId": "string",
-    "transcriptText": "exact quote from transcript",
-    "startTime": number.toFixed(2),
-    "endTime": number.toFixed(2)
+    "transcriptText": "exact quote",
+    "startTime": number,
+    "endTime": number
   }
 ]
 
-Source Transcripts:
-${JSON.stringify(Details, null, 2)}
+Source transcripts:
+${JSON.stringify(details, null, 2)}`.trim();
 
-Remember to:
-1. Only use exact quotes from the transcripts
-2. Ensure clips are cohesive and maintain context
-3. Focus on the most relevant content for: "${customPrompt}"${explicitDuration ? `\n4. Clip duration must be exactly ${explicitDuration.toFixed(2)} seconds (±0.05).` : ''}`;
+    const enhancedPrompt = customization
+      ? `${basePrompt}
 
-const enhancedPrompt = customization ? 
-    `${basePrompt}
-
-Style this selection according to:
+Apply these style preferences:
 - Tone: ${customization.tone}
 - Length: ${customization.length}
-- Style: ${customization.style}
+- Style: ${customization.style}`
+      : basePrompt;
 
-Maintain the same JSON structure while incorporating these style preferences.`
-    : basePrompt;
-        
-            console.log("Prompt-->" )
+    // Helper for retry logic
+    const callOpenAI = async (temperature) => {
+      const resp = await openai.chat.completions.create({
+        model: 'gpt-4-turbo-preview',
+        temperature,
+        max_tokens: 4000,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You are a precise clip-extractor. ' +
+              'You MUST obey all timing rules exactly (±0.05 s) and output PURE JSON—no prose, no markdown.'
+          },
+          { role: 'user', content: enhancedPrompt }
+        ]
+      });
+      return resp.choices[0].message.content.trim();
+    };
 
-        const result = await openai.chat.completions.create({
-            messages: [{ role: "user", content: enhancedPrompt }],
-            model: "gpt-4-turbo-preview",
-            temperature: 0.7,
-            max_tokens: 4000,
-        });
+    // ────────────────────────────
+    // 3.  First attempt (T=0.2)
+    // ────────────────────────────
+    let script = await callOpenAI(0.2);
 
-        let scriptContent;
-        try {
-            scriptContent = result.choices[0].message.content;
-            JSON.parse(scriptContent);
-        } catch (error) {
-            throw new Error('Invalid response format from AI model');
-        }
+    // Validation / potential retry
+    const validate = (clips) => {
+      if (!Array.isArray(clips) || clips.length === 0)
+        throw new Error('Empty or invalid JSON returned by the model.');
 
-        return res.status(200).json({
-            success: true,
-            data: {
-                script: scriptContent
-            },
-            message: "Video script generated successfully"
-        });
+      if (explicitDuration) {
+        const bad = clips.find(
+          (c) =>
+            Math.abs(
+              (parseFloat(c.endTime) - parseFloat(c.startTime)) -
+                explicitDuration
+            ) > 0.05
+        );
+        if (bad)
+          throw new Error(
+            `Clip duration mismatch (id: ${bad.videoId}). Expected ≈${explicitDuration}s`
+          );
+      }
+    };
 
-    } catch (error) {
-        return res.status(500).json({
-            success: false,
-            message: "Failed to generate video script",
-            error: error.message
-        });
+    const tryParse = (content) => {
+      try {
+        return JSON.parse(content);
+      } catch {
+        // Strip accidental markdown fences if present
+        const cleaned = content.replace(/^```(?:json)?|```$/g, '').trim();
+        return JSON.parse(cleaned);
+      }
+    };
+
+    let clips;
+    try {
+      clips = tryParse(script);
+      validate(clips);
+    } catch (err) {
+      // ─────────────────────────
+      // 4.  Retry once (T=0.0)
+      // ─────────────────────────
+      console.warn('First attempt failed – retrying once:', err.message);
+      script = await callOpenAI(0);
+      clips = tryParse(script);
+      validate(clips); // if this throws we’ll go to catch below
     }
+
+    // ────────────────────────────
+    // 5.  Success response
+    // ────────────────────────────
+    return res.status(200).json({
+      success: true,
+      data: { script: JSON.stringify(clips) },
+      message: 'Clips generated successfully'
+    });
+  } catch (error) {
+    console.error('generateClips error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to generate clips',
+      error: error.message
+    });
+  }
 };
 
 module.exports = generateClips;
