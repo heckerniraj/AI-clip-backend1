@@ -137,9 +137,10 @@ router.get('/:videoId/details', async (req, res) => {
     const seconds = Math.floor(duration % 60);
     const durationISO = `PT${minutes}M${seconds}S`;
 
-    // Transform videoUrl to a relative path for frontend access
-    const filename = path.basename(video.videoUrl); // Extracts filename (e.g., "some-uuid.mp4")
-    const correctedVideoUrl = `/uploads/${filename}`; // Constructs correct relative URL
+    // Construct the full video URL using the base URL
+    const baseUrl = process.env.BASE_URL || 'https://ai-clip-backend1-1.onrender.com';
+    const filename = path.basename(video.videoUrl);
+    const correctedVideoUrl = `${baseUrl}/uploads/${filename}`;
 
     const response = {
       success: true,
@@ -148,10 +149,10 @@ router.get('/:videoId/details', async (req, res) => {
         userId: video.userId,
         title: video.title,
         description: '',
-        videoUrl: correctedVideoUrl, // Updated to use corrected URL
+        videoUrl: correctedVideoUrl, // Full, correct URL
         thumbnailUrl: video.thumbnailUrl,
-        duration: duration, // Raw duration in seconds
-        durationISO: durationISO, // ISO formatted duration
+        duration: duration,
+        durationISO: durationISO,
         fileSize: video.fileSize,
         mimeType: video.mimeType,
         status: video.status,
@@ -168,11 +169,10 @@ router.get('/:videoId/details', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Server error while fetching video details',
-      ...(process.env.NODE_ENV === 'development' && { 
-        details: error.message 
-      })
+      ...(process.env.NODE_ENV === 'development' && { details: error.message })
     });
   }
 });
+
 
 module.exports = router;
