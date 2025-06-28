@@ -1,9 +1,10 @@
 const express = require('express');
-const mongoose = require('mongoose'); // ✅ Import mongoose
+const mongoose = require('mongoose');
 const router = express.Router();
 const Video = require('../model/uploadVideosSchema');
 const rateLimit = require('express-rate-limit');
 const { protect } = require('../middleware/authMiddleware');
+const path = require('path'); // Added to extract filename from videoUrl
 
 // Rate limiting
 const apiLimiter = rateLimit({
@@ -44,13 +45,13 @@ router.get('/:videoId/transcript', async (req, res) => {
     }
 
     if (video.status !== 'processed' && !video.transcript) {
-  return res.status(423).json({
-    success: false,
-    error: 'Video processing not completed',
-    status: video.status,
-    processingCompletedAt: video.processingCompletedAt
-  });
-}
+      return res.status(423).json({
+        success: false,
+        error: 'Video processing not completed',
+        status: video.status,
+        processingCompletedAt: video.processingCompletedAt
+      });
+    }
 
     if (!video.transcript) {
       return res.status(404).json({ 
@@ -71,23 +72,23 @@ router.get('/:videoId/transcript', async (req, res) => {
           ? new Date(video.processingCompletedAt) - new Date(video.createdAt)
           : null,
         transcript: {
-        text: video.transcript.text || '',
-        segments: (video.transcript.segments || []).map(segment => ({
-          id: segment.id || null,
-          text: segment.text || '',
-          start: (segment.start || segment.startTime || 0) / 1000, // Ensure seconds
-          end: (segment.end || segment.endTime || 0) / 1000,       // Ensure seconds
-          duration: ((segment.end || segment.endTime || 0) - (segment.start || segment.startTime || 0)) / 1000,
-          confidence: segment.confidence || null,
-          words: segment.words || []
-        })),
-        language: video.transcript.language || 'en',
-        processingStatus: 'completed'
+          text: video.transcript.text || '',
+          segments: (video.transcript.segments || []).map(segment => ({
+            id: segment.id || null,
+            text: segment.text || '',
+            start: (segment.start || segment.startTime || 0) / 1000, // Ensure seconds
+            end: (segment.end || segment.endTime || 0) / 1000,       // Ensure seconds
+            duration: ((segment.end || segment.endTime || 0) - (segment.start || segment.startTime || 0)) / 1000,
+            confidence: segment.confidence || null,
+            words: segment.words || []
+          })),
+          language: video.transcript.language || 'en',
+          processingStatus: 'completed'
+        }
       }
-    }
-  };
+    };
 
-  res.json(response);
+    res.json(response);
   } catch (error) {
     console.error('Transcript fetch error:', error);
     res.status(500).json({
@@ -128,13 +129,17 @@ router.get('/:videoId/details', async (req, res) => {
 
     // Calculate duration from transcript if not set
     let duration = video.duration || 0;
-  if (!duration && video.transcript?.segments?.length > 0) {
-    const lastSegment = video.transcript.segments[video.transcript.segments.length - 1];
-    duration = (lastSegment.end || lastSegment.endTime || 0) / 1000; // Convert to seconds
-  }
-  const minutes = Math.floor(duration / 60);
-  const seconds = Math.floor(duration % 60);
-  const durationISO = `PT${minutes}M${seconds}S`;
+    if (!duration && video.transcript?.segments?.length > 0) {
+      const lastSegment = video.transcript.segments[video.transcript.segments.length - 1];
+      duration = (lastSegment.end || lastSegment.endTime || 0) / 1000; // Convert to seconds
+    }
+    const minutes = Math.floor(duration / 60);
+    const seconds = Math.floor(duration % 60);
+    const durationISO = `PT${minutes}M${seconds}S`;
+
+    // Transform videoUrl to a relative path for frontend access
+    const filename = path.basename(video.videoUrl); // Extracts filename (e.g., "some-uuid.mp4")
+    const correctedVideoUrl = `/uploads/${filename}`; // Constructs correct relative URL
 
     const response = {
       success: true,
@@ -143,7 +148,7 @@ router.get('/:videoId/details', async (req, res) => {
         userId: video.userId,
         title: video.title,
         description: '',
-        videoUrl: video.videoUrl,
+        videoUrl: correctedVideoUrl, // Updated to use corrected URL
         thumbnailUrl: video.thumbnailUrl,
         duration: duration, // Raw duration in seconds
         durationISO: durationISO, // ISO formatted duration
