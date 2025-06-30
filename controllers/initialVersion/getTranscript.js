@@ -42,17 +42,13 @@ async function fetchYoutubeTranscriptDirectly(videoId, lang = 'en') {
         const transcript = await YoutubeTranscript.fetchTranscript(videoId, {
             lang: lang
         });
-        return {
-            transcript: transcript.map(item => ({
-                text: item.text,
-                start: item.offset / 1000, // Convert ms to seconds
-                duration: item.duration / 1000 // Convert ms to seconds
-            })),
-            source: 'youtube-transcript',
-            language: lang
-        };
+        return transcript.map(item => ({
+            text: item.text,
+            start: item.offset / 1000, // Convert ms to seconds
+            duration: item.duration / 1000 // Convert ms to seconds
+        }));
     } catch (error) {
-        console.error(`YouTube-transcript error (${lang}): [YoutubeTranscript] ${error.message}`);
+        console.error(`YouTube-transcript error (${lang}):`, error.message);
         return null;
     }
 }
@@ -63,45 +59,9 @@ async function fetchFromPythonAPI(videoId) {
             throw new Error('Python API URL not configured');
         }
         const response = await axios.get(`${PYTHON_API}/transcript/${videoId}`);
-        return {
-            transcript: response.data?.data || null,
-            source: 'python-api',
-            language: 'en'
-        };
+        return response.data?.data || null;
     } catch (error) {
         console.error('Python API error:', error.message);
-        return null;
-    }
-}
-
-async function fetchVideoDescription(videoId) {
-    try {
-        const response = await youtube.videos.list({
-            part: 'snippet',
-            id: videoId
-        });
-        
-        if (!response.data.items?.length) {
-            return null;
-        }
-        
-        const description = response.data.items[0].snippet.description;
-        if (!description) {
-            return null;
-        }
-        
-        // Return as a single "segment" with the entire description
-        return {
-            transcript: [{
-                text: description,
-                start: 0,
-                duration: 0 // Duration unknown for description
-            }],
-            source: 'video-description',
-            language: 'en'
-        };
-    } catch (error) {
-        console.error('Error fetching video description:', error.message);
         return null;
     }
 }
@@ -126,8 +86,7 @@ const getTranscript = async (req, res) => {
             });
         }
 
-        // Verify video exists and get title
-        let videoTitle = 'Unknown Video';
+        // Verify video exists
         try {
             const videoResponse = await youtube.videos.list({
                 part: 'snippet',
@@ -140,9 +99,7 @@ const getTranscript = async (req, res) => {
                     status: false
                 });
             }
-            
-            videoTitle = videoResponse.data.items[0].snippet.title;
-            console.log(`Video found: ${videoTitle}`);
+            console.log(`Video found: ${videoResponse.data.items[0].snippet.title}`);
         } catch (error) {
             console.error("Error checking video existence:", error.message);
             return res.status(500).json({
@@ -153,46 +110,39 @@ const getTranscript = async (req, res) => {
         }
 
         // Attempt to fetch transcript using multiple methods
+        let transcriptList = null;
         const methods = [
             { name: 'Python API', fn: () => fetchFromPythonAPI(videoId) },
             { name: 'YouTube Transcript (English)', fn: () => fetchYoutubeTranscriptDirectly(videoId, 'en') },
-            { name: 'YouTube Transcript (any language)', fn: () => fetchYoutubeTranscriptDirectly(videoId) },
-            { name: 'Video Description', fn: () => fetchVideoDescription(videoId) }
+            { name: 'YouTube Transcript (any language)', fn: () => fetchYoutubeTranscriptDirectly(videoId) }
         ];
 
-        let result = null;
-        let successfulMethod = null;
-        
         for (const method of methods) {
             console.log(`Trying ${method.name}...`);
-            result = await method.fn();
-            if (result && result.transcript && result.transcript.length > 0) {
-                successfulMethod = method.name;
+            transcriptList = await method.fn();
+            if (transcriptList) {
                 console.log(`Success with ${method.name}`);
                 break;
             }
         }
 
-        if (!result || !result.transcript || result.transcript.length === 0) {
+        if (!transcriptList || transcriptList.length === 0) {
             return res.status(404).json({
-                message: "No transcript available for this video. The video might not have captions enabled and no description available.",
+                message: "No transcript available for this video. The video might not have captions enabled.",
                 status: false,
-                videoTitle: videoTitle,
                 availableMethodsTried: methods.map(m => m.name)
             });
         }
 
         return res.status(200).json({
             message: "Transcript fetched successfully",
-            data: result.transcript,
+            data: transcriptList,
             status: true,
-            totalSegments: result.transcript.length,
+            totalSegments: transcriptList.length,
             metadata: {
                 videoId,
-                videoTitle,
-                source: result.source,
-                language: result.language || 'en',
-                isAutoGenerated: result.source !== 'video-description'
+                language: 'en',
+                isAutoGenerated: true
             }
         });
 
