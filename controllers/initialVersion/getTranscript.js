@@ -1,158 +1,82 @@
 const { google } = require('googleapis');
 const { YoutubeTranscript } = require('youtube-transcript');
-const axios = require('axios');
-const dotenv = require('dotenv');
-dotenv.config();
-
-const PYTHON_API = process.env.PYTHON_API || 'https://ai-py-backend.onrender.com';
-const APPLICATION_URL = process.env.APPLICATION_URL || 'https://ai-clip-backend1-1.onrender.com';
-
-// Configure global settings for Google APIs
-google.options({
-    http2: true,
-    headers: {
-        'Referer': APPLICATION_URL,
-        'Origin': APPLICATION_URL
-    }
-});
-
-const oauth2Client = new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    `${APPLICATION_URL}/api/v1/youtube/oauth2callback`
-);
+require('dotenv').config();
 
 const youtube = google.youtube({
     version: 'v3',
     auth: process.env.YOUTUBE_API_KEY
 });
 
-axios.defaults.headers.common['Referer'] = APPLICATION_URL;
-axios.defaults.headers.common['Origin'] = APPLICATION_URL;
-
-function getAuthUrl() {
-    return oauth2Client.generateAuthUrl({
-        access_type: 'offline',
-        scope: ['https://www.googleapis.com/auth/youtube.force-ssl']
-    });
-}
-
-async function fetchYoutubeTranscriptDirectly(videoId, lang = 'en') {
-    try {
-        const transcript = await YoutubeTranscript.fetchTranscript(videoId, {
-            lang: lang
-        });
-        return transcript.map(item => ({
-            text: item.text,
-            start: item.offset / 1000, // Convert ms to seconds
-            duration: item.duration / 1000 // Convert ms to seconds
-        }));
-    } catch (error) {
-        console.error(`YouTube-transcript error (${lang}):`, error.message);
-        return null;
-    }
-}
-
-async function fetchFromPythonAPI(videoId) {
-    try {
-        if (!PYTHON_API) {
-            throw new Error('Python API URL not configured');
-        }
-        const response = await axios.get(`${PYTHON_API}/transcript/${videoId}`);
-        return response.data?.data || null;
-    } catch (error) {
-        console.error('Python API error:', error.message);
-        return null;
-    }
-}
-
 const getTranscript = async (req, res) => {
     try {
         const { videoId } = req.params;
-        console.log("---->", videoId);
+        console.log("Processing video ID:", videoId);
 
-        // Validate input
+        // **Validate input**
         if (!videoId) {
-            return res.status(400).json({
-                message: "Video ID is required",
-                status: false
+            return res.status(400).json({ 
+                message: "Video ID is required", 
+                status: false 
             });
         }
 
         if (!process.env.YOUTUBE_API_KEY) {
-            return res.status(500).json({
-                message: "Server configuration error: YouTube API key is missing",
-                status: false
+            return res.status(500).json({ 
+                message: "YouTube API key missing", 
+                status: false 
             });
         }
 
-        // Verify video exists
+        // **Verify video exists**
+        const videoResponse = await youtube.videos.list({
+            part: 'snippet',
+            id: videoId
+        });
+
+        if (!videoResponse.data.items?.length) {
+            return res.status(404).json({ 
+                message: "Video not found", 
+                status: false 
+            });
+        }
+        console.log(`Video found: ${videoResponse.data.items[0].snippet.title}`);
+
+        // **Fetch transcript using YoutubeTranscript**
+        let transcript;
         try {
-            const videoResponse = await youtube.videos.list({
-                part: 'snippet',
-                id: videoId
-            });
-
-            if (!videoResponse.data.items?.length) {
-                return res.status(404).json({
-                    message: "Video not found or is not accessible",
-                    status: false
-                });
-            }
-            console.log(`Video found: ${videoResponse.data.items[0].snippet.title}`);
+            transcript = await YoutubeTranscript.fetchTranscript(videoId);
+            console.log("Transcript fetched successfully");
         } catch (error) {
-            console.error("Error checking video existence:", error.message);
-            return res.status(500).json({
-                message: "Failed to verify video existence",
-                error: error.message,
+            console.error("YouTube Transcript error:", error.message);
+            return res.status(404).json({
+                message: "No transcript available for this video.",
                 status: false
             });
         }
 
-        // Attempt to fetch transcript using multiple methods
-        let transcriptList = null;
-        const methods = [
-            { name: 'Python API', fn: () => fetchFromPythonAPI(videoId) },
-            { name: 'YouTube Transcript (English)', fn: () => fetchYoutubeTranscriptDirectly(videoId, 'en') },
-            { name: 'YouTube Transcript (any language)', fn: () => fetchYoutubeTranscriptDirectly(videoId) }
-        ];
-
-        for (const method of methods) {
-            console.log(`Trying ${method.name}...`);
-            transcriptList = await method.fn();
-            if (transcriptList) {
-                console.log(`Success with ${method.name}`);
-                break;
-            }
-        }
-
-        if (!transcriptList || transcriptList.length === 0) {
+        if (!transcript || transcript.length === 0) {
             return res.status(404).json({
-                message: "No transcript available for this video. The video might not have captions enabled.",
-                status: false,
-                availableMethodsTried: methods.map(m => m.name)
+                message: "No transcript available for this video.",
+                status: false
             });
         }
 
+        // **Format the transcript**
+        const formattedTranscript = transcript.map(item => ({
+            text: item.text,
+            start: item.offset / 1000, // Convert ms to seconds
+            duration: item.duration / 1000 // Convert ms to seconds
+        }));
+
+        // **Return successful response**
         return res.status(200).json({
             message: "Transcript fetched successfully",
-            data: transcriptList,
+            data: formattedTranscript,
             status: true,
-            totalSegments: transcriptList.length,
-            metadata: {
-                videoId,
-                language: 'en',
-                isAutoGenerated: true
-            }
+            totalSegments: formattedTranscript.length
         });
-
     } catch (error) {
-        console.error("Unexpected error:", {
-            message: error.message,
-            stack: error.stack,
-            videoId: req.params.videoId
-        });
-
+        console.error("Unexpected error:", error.message);
         return res.status(500).json({
             message: "Failed to fetch transcript",
             error: error.message,
@@ -161,4 +85,4 @@ const getTranscript = async (req, res) => {
     }
 };
 
-module.exports = { getTranscript, getAuthUrl, oauth2Client };
+module.exports = { getTranscript };
