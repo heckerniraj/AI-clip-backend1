@@ -3,7 +3,7 @@ const { YoutubeTranscript } = require('youtube-transcript');
 const NodeCache = require('node-cache');
 require('dotenv').config();
 
-// Initialize cache with 1-hour TTL and 10-minute check period
+// Initialize cache with 1-hour TTL for successful transcripts, 5-minute TTL for failures
 const cache = new NodeCache({ stdTTL: 3600, checkperiod: 600 });
 
 const youtube = google.youtube({
@@ -11,11 +11,20 @@ const youtube = google.youtube({
     auth: process.env.YOUTUBE_API_KEY
 });
 
-const getTranscript = async (req, res) => {
-    try {
-        const { videoId } = req.params;
-        console.log("Processing video ID:", videoId);
+// Utility function for logging errors with more detail
+const logError = (message, error, metadata = {}) => {
+    console.error(message, {
+        error: error.message,
+        stack: error.stack,
+        ...metadata
+    });
+};
 
+const getTranscript = async (req, res) => {
+    const { videoId } = req.params;
+    console.log(`Processing video ID: ${videoId}`);
+
+    try {
         // **Validate input**
         if (!videoId) {
             return res.status(400).json({ 
@@ -31,13 +40,19 @@ const getTranscript = async (req, res) => {
             });
         }
 
-        // **Check cache first**
+        // **Check cache**
         const cached = cache.get(videoId);
         if (cached !== undefined) {
             if (cached.noTranscript) {
                 return res.status(404).json({ 
-                    message: "No transcript available for this video.", 
+                    message: "No transcript available for this video (cached).", 
                     status: false 
+                });
+            } else if (cached.rateLimited) {
+                return res.status(429).json({ 
+                    message: "Rate limit exceeded. Please try again later.", 
+                    status: false,
+                    retryAfter: 300 // Suggest retrying after 5 minutes
                 });
             } else {
                 return res.status(200).json({
@@ -50,18 +65,28 @@ const getTranscript = async (req, res) => {
         }
 
         // **Verify video exists**
-        const videoResponse = await youtube.videos.list({
-            part: 'snippet',
-            id: videoId
-        });
+        try {
+            const videoResponse = await youtube.videos.list({
+                part: 'snippet',
+                id: videoId
+            });
 
-        if (!videoResponse.data.items?.length) {
-            return res.status(404).json({ 
-                message: "Video not found", 
-                status: false 
+            if (!videoResponse.data.items?.length) {
+                cache.set(videoId, { noTranscript: true }, 300); // Cache for 5 minutes
+                return res.status(404).json({ 
+                    message: "Video not found", 
+                    status: false 
+                });
+            }
+            console.log(`Video found: ${videoResponse.data.items[0].snippet.title}`);
+        } catch (error) {
+            logError("Error checking video existence:", error, { videoId });
+            return res.status(500).json({
+                message: "Failed to verify video existence",
+                error: error.message,
+                status: false
             });
         }
-        console.log(`Video found: ${videoResponse.data.items[0].snippet.title}`);
 
         // **Fetch transcript with retry logic**
         const maxRetries = 3;
@@ -70,11 +95,12 @@ const getTranscript = async (req, res) => {
 
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
-                transcript = await YoutubeTranscript.fetchTranscript(videoId);
-                console.log("Transcript fetched successfully");
-                break; // Exit loop on success
+                transcript = await YoutubeTranscript.fetchTranscript(videoId, { lang: 'en' });
+                console.log(`Transcript fetched successfully on attempt ${attempt}`);
+                break;
             } catch (error) {
                 lastError = error;
+                logError(`Transcript fetch failed on attempt ${attempt}:`, error, { videoId });
                 if (attempt < maxRetries) {
                     const delay = 2000 * attempt; // Exponential backoff: 2s, 4s, 6s
                     console.log(`Retry ${attempt}/${maxRetries} after ${delay}ms`);
@@ -84,7 +110,7 @@ const getTranscript = async (req, res) => {
         }
 
         // **Handle fetch result**
-        if (transcript) {
+        if (transcript && transcript.length > 0) {
             const formattedTranscript = transcript.map(item => ({
                 text: item.text,
                 start: item.offset / 1000, // Convert ms to seconds
@@ -98,7 +124,7 @@ const getTranscript = async (req, res) => {
                 totalSegments: formattedTranscript.length
             });
         } else {
-            const errorMessage = lastError.message.toLowerCase();
+            const errorMessage = lastError?.message?.toLowerCase() || "";
             if (errorMessage.includes("no transcript") || errorMessage.includes("transcript not found")) {
                 cache.set(videoId, { noTranscript: true }, 300); // Cache for 5 minutes
                 return res.status(404).json({
@@ -106,20 +132,22 @@ const getTranscript = async (req, res) => {
                     status: false
                 });
             } else if (errorMessage.includes("too many requests")) {
+                cache.set(videoId, { rateLimited: true }, 300); // Cache for 5 minutes
                 return res.status(429).json({
                     message: "Rate limit exceeded. Please try again later.",
-                    status: false
+                    status: false,
+                    retryAfter: 300 // Suggest retrying after 5 minutes
                 });
             } else {
                 return res.status(500).json({
                     message: "Failed to fetch transcript",
-                    error: lastError.message,
+                    error: lastError?.message || "Unknown error",
                     status: false
                 });
             }
         }
     } catch (error) {
-        console.error("Unexpected error:", error.message);
+        logError("Unexpected error:", error, { videoId });
         return res.status(500).json({
             message: "Failed to fetch transcript",
             error: error.message,
