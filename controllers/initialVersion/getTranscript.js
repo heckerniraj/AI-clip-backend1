@@ -2,6 +2,7 @@ const { google } = require('googleapis');
 const { YoutubeTranscript } = require('youtube-transcript');
 const axios = require('axios');
 const dotenv = require('dotenv');
+const Transcript = require('../../model/Transcript'); // Import the Transcript model
 dotenv.config();
 
 const PYTHON_API = process.env.PYTHON_API;
@@ -9,156 +10,210 @@ const APPLICATION_URL = process.env.APPLICATION_URL || 'http://localhost:4001';
 
 // Configure global settings for Google APIs
 google.options({
-    http2: true,
-    headers: {
-        'Referer': APPLICATION_URL,
-        'Origin': APPLICATION_URL
-    }
+  http2: true,
+  headers: {
+    'Referer': APPLICATION_URL,
+    'Origin': APPLICATION_URL
+  }
 });
 
-const oauth2Client = new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    `${APPLICATION_URL}/api/v1/youtube/oauth2callback`
-);
-
 const youtube = google.youtube({
-    version: 'v3',
-    auth: process.env.YOUTUBE_API_KEY
+  version: 'v3',
+  auth: process.env.YOUTUBE_API_KEY
 });
 
 axios.defaults.headers.common['Referer'] = APPLICATION_URL;
 axios.defaults.headers.common['Origin'] = APPLICATION_URL;
 
-function getAuthUrl() {
-    return oauth2Client.generateAuthUrl({
-        access_type: 'offline',
-        scope: ['https://www.googleapis.com/auth/youtube.force-ssl']
-    });
-}
-
 async function fetchYoutubeTranscriptDirectly(videoId, lang = 'en') {
-    try {
-        const transcript = await YoutubeTranscript.fetchTranscript(videoId, {
-            lang: lang
-        });
-        return transcript.map(item => ({
-            text: item.text,
-            start: item.offset / 1000, // Convert ms to seconds
-            duration: item.duration / 1000 // Convert ms to seconds
-        }));
-    } catch (error) {
-        console.error(`YouTube-transcript error (${lang}):`, error.message);
-        return null;
-    }
+  try {
+    const transcript = await YoutubeTranscript.fetchTranscript(videoId, { lang });
+    return transcript.map(item => ({
+      text: item.text,
+      start: item.offset / 1000, // Convert ms to seconds
+      duration: item.duration / 1000 // Convert ms to seconds
+    }));
+  } catch (error) {
+    console.error(`YouTube-transcript error (${lang}):`, error.message);
+    throw error; // Let the caller handle the error
+  }
 }
 
 async function fetchFromPythonAPI(videoId) {
-    try {
-        if (!PYTHON_API) {
-            throw new Error('Python API URL not configured');
-        }
-        const response = await axios.get(`${PYTHON_API}/transcript/${videoId}`);
-        return response.data?.data || null;
-    } catch (error) {
-        console.error('Python API error:', error.message);
-        return null;
+  try {
+    if (!PYTHON_API) {
+      throw new Error('Python API URL not configured');
     }
+    const response = await axios.get(`${PYTHON_API}/transcript/${videoId}`);
+    return response.data?.data || null;
+  } catch (error) {
+    console.error('Python API error:', error.message);
+    throw error;
+  }
 }
 
 const getTranscript = async (req, res) => {
-    try {
-        const { videoId } = req.params;
-        console.log("---->", videoId);
+  try {
+    const { videoId } = req.params;
+    console.log("---->", videoId);
 
-        // Validate input
-        if (!videoId) {
-            return res.status(400).json({
-                message: "Video ID is required",
-                status: false
-            });
-        }
-
-        if (!process.env.YOUTUBE_API_KEY) {
-            return res.status(500).json({
-                message: "Server configuration error: YouTube API key is missing",
-                status: false
-            });
-        }
-
-        // Verify video exists
-        try {
-            const videoResponse = await youtube.videos.list({
-                part: 'snippet',
-                id: videoId
-            });
-
-            if (!videoResponse.data.items?.length) {
-                return res.status(404).json({
-                    message: "Video not found or is not accessible",
-                    status: false
-                });
-            }
-            console.log(`Video found: ${videoResponse.data.items[0].snippet.title}`);
-        } catch (error) {
-            console.error("Error checking video existence:", error.message);
-            return res.status(500).json({
-                message: "Failed to verify video existence",
-                error: error.message,
-                status: false
-            });
-        }
-
-        // Attempt to fetch transcript using multiple methods
-        let transcriptList = null;
-        const methods = [
-            { name: 'Python API', fn: () => fetchFromPythonAPI(videoId) },
-            { name: 'YouTube Transcript (English)', fn: () => fetchYoutubeTranscriptDirectly(videoId, 'en') },
-            { name: 'YouTube Transcript (any language)', fn: () => fetchYoutubeTranscriptDirectly(videoId) }
-        ];
-
-        for (const method of methods) {
-            console.log(`Trying ${method.name}...`);
-            transcriptList = await method.fn();
-            if (transcriptList) {
-                console.log(`Success with ${method.name}`);
-                break;
-            }
-        }
-
-        if (!transcriptList || transcriptList.length === 0) {
-            return res.status(404).json({
-                message: "No transcript available for this video. The video might not have captions enabled.",
-                status: false,
-                availableMethodsTried: methods.map(m => m.name)
-            });
-        }
-
-        return res.status(200).json({
-            message: "Transcript fetched successfully",
-            data: transcriptList,
-            status: true,
-            totalSegments: transcriptList.length,
-            metadata: {
-                videoId,
-                language: 'en',
-                isAutoGenerated: true
-            }
-        });
-
-    } catch (error) {
-        console.error("Unexpected error:", {
-            message: error.message,
-            stack: error.stack,
-            videoId: req.params.videoId
-        });
-
-        return res.status(500).json({
-            message: "Failed to fetch transcript",
-            error: error.message,
-            status: false
-        });
+    // Validate input
+    if (!videoId) {
+      return res.status(400).json({
+        message: "Video ID is required",
+        status: false
+      });
     }
+
+    if (!process.env.YOUTUBE_API_KEY) {
+      return res.status(500).json({
+        message: "Server configuration error: YouTube API key is missing",
+        status: false
+      });
+    }
+
+    // Check cache
+    const cached = await Transcript.findOne({
+      videoId,
+      expiresAt: { $gt: new Date() }
+    }).sort({ fetchedAt: -1 });
+
+    if (cached) {
+      if (cached.status === 'rate_limited') {
+        return res.status(429).json({
+          message: "Too many requests. Please try again later.",
+          status: false
+        });
+      } else if (cached.status === 'no_transcript') {
+        return res.status(404).json({
+          message: "No transcript available for this video.",
+          status: false
+        });
+      } else if (cached.status === 'success') {
+        return res.status(200).json({
+          message: "Transcript fetched from cache",
+          data: cached.transcript,
+          status: true,
+          totalSegments: cached.transcript.length,
+          metadata: {
+            videoId,
+            language: cached.language,
+            isAutoGenerated: true
+          }
+        });
+      }
+    }
+
+    // Verify video exists
+    try {
+      const videoResponse = await youtube.videos.list({
+        part: 'snippet',
+        id: videoId
+      });
+      if (!videoResponse.data.items?.length) {
+        return res.status(404).json({
+          message: "Video not found or is not accessible",
+          status: false
+        });
+      }
+      console.log(`Video found: ${videoResponse.data.items[0].snippet.title}`);
+    } catch (error) {
+      console.error("Error checking video existence:", error.message);
+      return res.status(500).json({
+        message: "Failed to verify video existence",
+        error: error.message,
+        status: false
+      });
+    }
+
+    // Attempt to fetch transcript
+    let transcriptList = null;
+    let rateLimited = false;
+    const errors = [];
+    const methods = [];
+
+    if (PYTHON_API) {
+      methods.push({ name: 'Python API', fn: () => fetchFromPythonAPI(videoId) });
+    }
+    methods.push(
+      { name: 'YouTube Transcript (English)', fn: () => fetchYoutubeTranscript专注于fetchYoutubeTranscriptDirectly(videoId, 'en') },
+      { name: 'YouTube Transcript (any language)', fn: () => fetchYoutubeTranscriptDirectly(videoId) }
+    );
+
+    for (const method of methods) {
+      console.log(`Trying ${method.name}...`);
+      try {
+        transcriptList = await method.fn();
+        if (transcriptList && transcriptList.length > 0) {
+          console.log(`Success with ${method.name}`);
+          break;
+        }
+      } catch (error) {
+        if (error.message.includes("too many requests")) {
+          rateLimited = true;
+        }
+        errors.push(`${method.name}: ${error.message}`);
+      }
+    }
+
+    if (transcriptList && transcriptList.length > 0) {
+      // Cache successful fetch
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+      await Transcript.create({
+        videoId,
+        status: 'success',
+        transcript: transcriptList,
+        language: 'en',
+        fetchedAt: new Date(),
+        expiresAt
+      });
+      return res.status(200).json({
+        message: "Transcript fetched successfully",
+        data: transcriptList,
+        status: true,
+        totalSegments: transcriptList.length,
+        metadata: {
+          videoId,
+          language: 'en',
+          isAutoGenerated: true
+        }
+      });
+    } else if (rateLimited) {
+      // Cache rate-limited state
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+      await Transcript.create({
+        videoId,
+        status: 'rate_limited',
+        fetchedAt: new Date(),
+        expiresAt
+      });
+      return res.status(429).json({
+        message: "Too many requests to YouTube. Please try again later.",
+        status: false
+      });
+    } else {
+      // Cache no-transcript state
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+      await Transcript.create({
+        videoId,
+        status: 'no_transcript',
+        fetchedAt: new Date(),
+        expiresAt
+      });
+      return res.status(404).json({
+        message: "No transcript available for this video. The video might not have captions enabled.",
+        status: false,
+        errors
+      });
+    }
+  } catch (error) {
+    console.error("Unexpected error:", { message: error.message, stack: error.stack, videoId });
+    return res.status(500).json({
+      message: "Failed to fetch transcript",
+      error: error.message,
+      status: false
+    });
+  }
 };
 
-module.exports = { getTranscript, getAuthUrl, oauth2Client };
+module.exports = { getTranscript };
