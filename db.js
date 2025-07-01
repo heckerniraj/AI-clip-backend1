@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 const dotenv = require("dotenv");
-const Transcript = require("./models/Transcript"); // Adjust the path to your Transcript model
+const Transcript = require("./model/Transcript"); // Adjust the path to your Transcript model
 dotenv.config();
 
 const connectDB = () => {
