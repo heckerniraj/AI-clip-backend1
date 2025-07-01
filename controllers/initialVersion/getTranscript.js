@@ -6,17 +6,17 @@ require('dotenv').config();
 // Initialize cache with 1-hour TTL for successful transcripts, 15-minute TTL for failures
 const cache = new NodeCache({ stdTTL: 3600, checkperiod: 600 });
 
-// Initialize OAuth2 client
+// Initialize OAuth2 client (for private operations if needed)
 const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
     process.env.REDIRECT_URI || 'https://ai-clip-backend1-1.onrender.com/api/v1/youtube/oauth2callback'
 );
 
-// Set up YouTube API with OAuth2
+// Set up YouTube API client
 const youtube = google.youtube({
     version: 'v3',
-    auth: oauth2Client
+    auth: process.env.YOUTUBE_API_KEY // Default to API key for public operations
 });
 
 // Utility function for logging errors with more detail
@@ -52,7 +52,7 @@ const getTranscript = async (req, res) => {
     console.log(`Processing video ID: ${videoId}`);
 
     try {
-        // **Validate input**
+        // Validate input
         if (!videoId) {
             return res.status(400).json({ 
                 message: "Video ID is required", 
@@ -60,14 +60,15 @@ const getTranscript = async (req, res) => {
             });
         }
 
-        if (!process.env.YOUTUBE_API_KEY && !process.env.GOOGLE_CLIENT_ID) {
+        // Check if API key is available
+        if (!process.env.YOUTUBE_API_KEY) {
             return res.status(500).json({ 
-                message: "YouTube API key or OAuth2 credentials missing", 
+                message: "YouTube API key is missing in server configuration", 
                 status: false 
             });
         }
 
-        // **Check cache**
+        // Check cache
         const cached = cache.get(videoId);
         if (cached !== undefined) {
             if (cached.noTranscript) {
@@ -93,7 +94,7 @@ const getTranscript = async (req, res) => {
             }
         }
 
-        // **Verify video exists**
+        // Verify video exists using API key
         try {
             const videoResponse = await youtube.videos.list({
                 part: 'snippet',
@@ -126,15 +127,14 @@ const getTranscript = async (req, res) => {
             });
         }
 
-        // **Set OAuth2 credentials if available**
+        // Set OAuth2 credentials if provided (for private operations)
         if (req.headers.authorization) {
             const token = req.headers.authorization.replace('Bearer ', '');
             oauth2Client.setCredentials({ access_token: token });
-        } else if (process.env.YOUTUBE_API_KEY) {
-            youtube.auth = process.env.YOUTUBE_API_KEY; // Fallback to API key
+            youtube.auth = oauth2Client; // Switch to OAuth2 for this request
         }
 
-        // **Fetch transcript using YouTube Data API**
+        // Fetch transcript (using API key or OAuth2 based on auth setup)
         try {
             const captionsResponse = await youtube.captions.list({
                 part: 'snippet',
@@ -147,7 +147,7 @@ const getTranscript = async (req, res) => {
             );
 
             if (!captionTrack) {
-                // Try fallback to youtube-transcript
+                // Fallback to youtube-transcript library
                 try {
                     const transcript = await fetchTranscriptFallback(videoId);
                     cache.set(videoId, transcript);
@@ -158,20 +158,17 @@ const getTranscript = async (req, res) => {
                         totalSegments: transcript.length
                     });
                 } catch (fallbackError) {
-                    if (fallbackError.message.includes("too many requests")) {
-                        cache.set(videoId, { rateLimited: true }, 900);
-                        return res.status(429).json({
-                            message: "Rate limit exceeded. Please try again later.",
-                            status: false,
-                            retryAfter: 900
-                        });
-                    }
                     cache.set(videoId, { noTranscript: true }, 900);
                     return res.status(404).json({
                         message: "No English transcript available for this video.",
                         status: false
                     });
                 }
+            }
+
+            // Switch to OAuth2 for downloading captions if token is provided
+            if (req.headers.authorization) {
+                youtube.auth = oauth2Client;
             }
 
             const transcriptResponse = await youtube.captions.download({
@@ -214,14 +211,6 @@ const getTranscript = async (req, res) => {
             });
         } catch (error) {
             logError("Transcript fetch failed:", error, { videoId });
-            if (error.code === 'ECONNABORTED') {
-                cache.set(videoId, { timeout: true }, 900);
-                return res.status(429).json({
-                    message: "Request timed out while fetching transcript. Please try again later.",
-                    status: false,
-                    retryAfter: 900
-                });
-            }
             if (error.message.includes("quota")) {
                 cache.set(videoId, { rateLimited: true }, 900);
                 return res.status(429).json({
@@ -230,7 +219,7 @@ const getTranscript = async (req, res) => {
                     retryAfter: 900
                 });
             }
-            // Fallback to youtube-transcript
+            // Fallback to youtube-transcript library
             try {
                 const transcript = await fetchTranscriptFallback(videoId);
                 cache.set(videoId, transcript);
@@ -241,14 +230,6 @@ const getTranscript = async (req, res) => {
                     totalSegments: transcript.length
                 });
             } catch (fallbackError) {
-                if (fallbackError.message.includes("too many requests")) {
-                    cache.set(videoId, { rateLimited: true }, 900);
-                    return res.status(429).json({
-                        message: "Rate limit exceeded. Please try again later.",
-                        status: false,
-                        retryAfter: 900
-                    });
-                }
                 cache.set(videoId, { noTranscript: true }, 900);
                 return res.status(404).json({
                     message: "No transcript available for this video.",
