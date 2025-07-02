@@ -1,12 +1,13 @@
 const { google } = require('googleapis');
 const { YoutubeTranscript } = require('youtube-transcript');
+const { getSubtitles } = require('youtube-captions-scraper'); // Import youtube-captions-scraper
 const axios = require('axios');
 const dotenv = require('dotenv');
 const Transcript = require('../../model/Transcript'); // Import the Transcript model
 dotenv.config();
 
 const PYTHON_API = process.env.PYTHON_API || 'https://ai-py-backend.onrender.com';
-const APPLICATION_URL = process.env.APPLICATION_URL || 'https://ai-py-backend.onrender.com';
+const APPLICATION_URL = process.env.APPLICATION_URL || 'https://ai-clip-backend1-1.onrender.com';
 
 // Configure global settings for Google APIs
 google.options({
@@ -36,6 +37,20 @@ async function fetchYoutubeTranscriptDirectly(videoId, lang = 'en') {
   } catch (error) {
     console.error(`YouTube-transcript error (${lang}):`, error.message);
     throw error; // Let the caller handle the error
+  }
+}
+
+async function fetchYoutubeCaptionsScraper(videoId, lang = 'en') {
+  try {
+    const subtitles = await getSubtitles({ videoID: videoId, lang });
+    return subtitles.map(item => ({
+      text: item.text,
+      start: item.start,
+      duration: item.dur // Duration is already in seconds
+    }));
+  } catch (error) {
+    console.error(`YouTube-captions-scraper error (${lang}):`, error.message);
+    throw error;
   }
 }
 
@@ -137,7 +152,9 @@ const getTranscript = async (req, res) => {
     }
     methods.push(
       { name: 'YouTube Transcript (English)', fn: () => fetchYoutubeTranscriptDirectly(videoId, 'en') },
-      { name: 'YouTube Transcript (any language)', fn: () => fetchYoutubeTranscriptDirectly(videoId) }
+      { name: 'YouTube Transcript (any language)', fn: () => fetchYoutubeTranscriptDirectly(videoId) },
+      { name: 'YouTube Captions Scraper (English)', fn: () => fetchYoutubeCaptionsScraper(videoId, 'en') },
+      { name: 'YouTube Captions Scraper (any language)', fn: () => fetchYoutubeCaptionsScraper(videoId) }
     );
 
     for (const method of methods) {
