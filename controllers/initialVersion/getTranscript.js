@@ -5,8 +5,8 @@ const dotenv = require('dotenv');
 const Transcript = require('../../model/Transcript'); // Import the Transcript model
 dotenv.config();
 
-const PYTHON_API = process.env.PYTHON_API;
-const APPLICATION_URL = process.env.APPLICATION_URL || 'http://localhost:4001';
+const PYTHON_API = process.env.PYTHON_API || 'https://ai-py-backend.onrender.com';
+const APPLICATION_URL = process.env.APPLICATION_URL || 'https://ai-py-backend.onrender.com';
 
 // Configure global settings for Google APIs
 google.options({
@@ -136,7 +136,7 @@ const getTranscript = async (req, res) => {
       methods.push({ name: 'Python API', fn: () => fetchFromPythonAPI(videoId) });
     }
     methods.push(
-      { name: 'YouTube Transcript (English)', fn: () => fetchYoutubeTranscript专注于fetchYoutubeTranscriptDirectly(videoId, 'en') },
+      { name: 'YouTube Transcript (English)', fn: () => fetchYoutubeTranscriptDirectly(videoId, 'en') },
       { name: 'YouTube Transcript (any language)', fn: () => fetchYoutubeTranscriptDirectly(videoId) }
     );
 
